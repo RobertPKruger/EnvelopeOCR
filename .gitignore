@@ -1,0 +1,54 @@
+# =========================
+# .NET build output
+# =========================
+bin/
+obj/
+
+# =========================
+# VS Code
+# =========================
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/settings.json
+
+# =========================
+# User Secrets (never commit)
+# =========================
+# (Stored outside repo, but guard just in case)
+**/secrets.json
+
+# =========================
+# App configuration secrets
+# =========================
+appsettings.Development.json
+appsettings.Production.json
+appsettings.*.local.json
+
+# =========================
+# Runtime data / OCR workflow
+# =========================
+inbox/
+processing/
+processed/
+failed/
+output/
+
+# =========================
+# Logs / manifests
+# =========================
+*.log
+manifest.jsonl
+
+# =========================
+# OS / editor cruft
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Temporary files
+# =========================
+*.tmp
+*.bak
+*.swp
