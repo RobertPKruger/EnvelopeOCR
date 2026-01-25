@@ -5,7 +5,24 @@ using Microsoft.Extensions.Configuration;
 
 static class Program
 {
-    static async Task Main()
+    static (bool emitJson, string? jsonPath) ParseArgs(string[] args)
+    {
+        // Usage: --emit-json output\batch.json
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (string.Equals(args[i], "--emit-json", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (i + 1 >= args.Length)
+                        throw new ArgumentException("Missing path after --emit-json");
+
+                    return (true, args[i + 1]);
+                }
+        }
+
+        return (false, null);
+    }
+
+    static async Task Main(string[] args)
     {
         var config = new ConfigurationBuilder()
             .SetBasePath(Directory.GetCurrentDirectory())
@@ -58,6 +75,16 @@ static class Program
             .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
+        var (emitJson, jsonPath) = ParseArgs(args);
+
+        BatchOutput? batch = emitJson ? new BatchOutput() : null;
+
+        if (emitJson)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(jsonPath!) ?? ".");
+            Console.WriteLine($"JSON mode enabled. Will write: {jsonPath}");
+        }
+
         foreach (var srcPath in files)
         {
             var fileName = Path.GetFileName(srcPath);
@@ -84,6 +111,23 @@ static class Program
                 var mime = GetMimeType(workPath);
 
                 var result = await ExtractEnvelopeTextAsync(http, base64, mime);
+
+                if (emitJson)
+                {
+                    var pf = new ProcessedFile
+                    {
+                        Name = fileName,
+                        Sections = result.Blocks
+                            .Select(b => new OutputSection
+                            {
+                                // Keeping each block together as one section
+                                Content = (b.Text ?? "").Trim()
+                            })
+                            .ToList()
+                    };
+
+                    batch!.Files.Add(pf);
+                }
 
                 // Basic validation heuristic: require some non-trivial text
                 var allText = string.Join("\n\n", result.Blocks.Select(b => $"[{b.Label}]\n{b.Text}".Trim()));
@@ -146,6 +190,19 @@ static class Program
                 // Move to failed (keep for manual review / re-run)
                 var failPath = Path.Combine(failed, fileName);
                 try { File.Move(workPath, failPath, overwrite: true); } catch { /* ignore */ }
+            }
+
+            if (emitJson && batch != null)
+            {
+                var options = new JsonSerializerOptions
+                {
+                    WriteIndented = true
+                };
+
+                var json = JsonSerializer.Serialize(batch, options);
+                await File.WriteAllTextAsync(jsonPath!, json, Encoding.UTF8);
+
+                Console.WriteLine($"Wrote JSON batch file: {jsonPath}");
             }
         }
     }
@@ -326,4 +383,20 @@ static class HttpRequestMessageExtensions
 
         return clone;
     }
+}
+
+public sealed class BatchOutput
+{
+    public List<ProcessedFile> Files { get; set; } = new();
+}
+
+public sealed class ProcessedFile
+{
+    public string Name { get; set; } = "";                 // image filename
+    public List<OutputSection> Sections { get; set; } = new();
+}
+
+public sealed class OutputSection
+{
+    public string Content { get; set; } = "";              // one section's text
 }
