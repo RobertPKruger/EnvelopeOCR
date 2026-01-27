@@ -85,10 +85,13 @@ static class Program
             Console.WriteLine($"JSON mode enabled. Will write: {jsonPath}");
         }
 
+        Console.WriteLine($"Found {files.Count} image(s) in inbox.");
+
         foreach (var srcPath in files)
         {
             var fileName = Path.GetFileName(srcPath);
             var workPath = Path.Combine(processing, fileName);
+            Console.WriteLine($"\n--- Processing: {fileName} ---");
 
             // Atomic move to processing
             try
@@ -109,45 +112,42 @@ static class Program
                 var bytes = await File.ReadAllBytesAsync(workPath);
                 var base64 = Convert.ToBase64String(bytes);
                 var mime = GetMimeType(workPath);
+                Console.WriteLine($"  File size: {bytes.Length:N0} bytes, MIME: {mime}");
 
-                var result = await ExtractEnvelopeTextAsync(http, base64, mime);
+                Console.WriteLine("  Calling OpenAI API...");
+                var result = await ExtractTextAsync(http, base64, mime);
 
                 if (emitJson)
                 {
                     var pf = new ProcessedFile
                     {
                         Name = fileName,
-                        Sections = result.Blocks
-                            .Select(b => new OutputSection
-                            {
-                                // Keeping each block together as one section
-                                Content = (b.Text ?? "").Trim()
-                            })
-                            .ToList()
+                        Sections = new List<OutputSection>
+                        {
+                            new OutputSection { Content = (result.Text ?? "").Trim() }
+                        }
                     };
 
                     batch!.Files.Add(pf);
                 }
 
                 // Basic validation heuristic: require some non-trivial text
-                var allText = string.Join("\n\n", result.Blocks.Select(b => $"[{b.Label}]\n{b.Text}".Trim()));
-                if (string.IsNullOrWhiteSpace(allText) || allText.Count(char.IsLetterOrDigit) < 15)
-                    throw new Exception("OCR result too short / empty.");
+                var extractedText = (result.Text ?? "").Trim();
+                var alphanumCount = extractedText.Count(char.IsLetterOrDigit);
+                Console.WriteLine($"  Validation: {alphanumCount} alphanumeric chars (minimum: 15)");
+                if (string.IsNullOrWhiteSpace(extractedText) || alphanumCount < 15)
+                    throw new Exception($"OCR result too short / empty. Only {alphanumCount} alphanumeric chars found.");
 
-                // Write output text file (blocks kept together)
+                // Write output text file
                 var sb = new StringBuilder();
                 sb.AppendLine($"Source: {fileName}");
                 sb.AppendLine($"ProcessedUtc: {DateTime.UtcNow:O}");
                 sb.AppendLine(new string('-', 40));
-                foreach (var b in result.Blocks)
-                {
-                    sb.AppendLine($"[{b.Label}]");
-                    sb.AppendLine((b.Text ?? "").Trim());
-                    sb.AppendLine();
-                }
+                sb.AppendLine(extractedText);
 
                 if (result.Notes?.Count > 0)
                 {
+                    sb.AppendLine();
                     sb.AppendLine("[notes]");
                     foreach (var n in result.Notes) sb.AppendLine($"- {n}");
                 }
@@ -174,7 +174,10 @@ static class Program
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine($"FAIL: {fileName} :: {ex.Message}");
+                Console.Error.WriteLine($"FAIL: {fileName}");
+                Console.Error.WriteLine($"  Error: {ex.Message}");
+                if (ex.InnerException != null)
+                    Console.Error.WriteLine($"  Inner: {ex.InnerException.Message}");
 
                 var manifestLine = JsonSerializer.Serialize(new
                 {
@@ -213,6 +216,9 @@ static class Program
         return ext is ".png" or ".jpg" or ".jpeg" or ".webp" or ".bmp" or ".tif" or ".tiff";
     }
 
+    static string Truncate(string s, int maxLen) =>
+        s.Length <= maxLen ? s : s[..maxLen] + "...";
+
     static string GetMimeType(string path)
     {
         var ext = Path.GetExtension(path).ToLowerInvariant();
@@ -228,45 +234,42 @@ static class Program
     }
 
     // Model response DTO
-    public sealed class EnvelopeResult
+    public sealed class OcrResult
     {
-        [JsonPropertyName("blocks")]
-        public List<TextBlock> Blocks { get; set; } = new();
+        [JsonPropertyName("text")]
+        public string Text { get; set; } = "";
 
         [JsonPropertyName("notes")]
         public List<string>? Notes { get; set; }
     }
 
-    public sealed class TextBlock
+    static async Task<OcrResult> ExtractTextAsync(HttpClient http, string base64, string mime)
     {
-        [JsonPropertyName("label")]
-        public string Label { get; set; } = "";
-
-        [JsonPropertyName("text")]
-        public string Text { get; set; } = "";
-    }
-
-    static async Task<EnvelopeResult> ExtractEnvelopeTextAsync(HttpClient http, string base64, string mime)
-    {
-        // Prompt designed to keep regions together and avoid "helpful" extra text.
-        var system = "You are an OCR engine. You only output valid JSON, no markdown, no extra commentary.";
+        // Prompt designed for astronomy-related document OCR.
+        var system = """
+You are an OCR engine specialized in reading astronomy-related documents and photographic plates.
+You only output valid JSON, no markdown, no extra commentary.
+""";
         var user = """
-Extract all readable text from this photo of a mailed envelope (handwritten likely).
-Group text into blocks so the return address stays together and the recipient address stays together.
+Extract ALL readable text from this image. The content is astronomy-related.
+
+Context to help with recognition:
+- Look for terms like: Plate, Plates, Exposure, asteroid, object, planet, star, telescope, magnitude, epoch, coordinates, RA, Dec, hours, minutes, seconds
+- Unfamiliar words may be constellation names (e.g., Serpens, Ophiuchus, Cygnus, Aquila)
+- Star designations often follow patterns like "V Serpentis", "V Serp", "RR Lyrae", "SS Cygni" where a letter or letters precede the constellation name
+- Variable star types use abbreviations: "V" for variable, "RR", "SS", "UV", etc.
+- Numbers may represent dates, plate numbers, exposure times, or celestial coordinates
+
 Return ONLY JSON in this exact shape:
 {
-  "blocks": [
-    {"label":"return_address","text":"..."},
-    {"label":"recipient_address","text":"..."},
-    {"label":"other","text":"..."}
-  ],
-  "notes": ["...optional warnings..."]
+  "text": "all extracted text, preserving line breaks",
+  "notes": ["...optional warnings about illegible sections..."]
 }
 
 Rules:
-- Preserve line breaks inside each block.
-- Do not invent text. If unclear, leave it out and add a note like "illegible section".
-- Keep stamps/postmarks/tracking numbers in "other" if readable.
+- Preserve line breaks and spatial groupings where meaningful.
+- Do not invent text. If a section is unclear, note it in "notes" and omit that text.
+- Include all visible text: handwritten, typed, stamped, or printed.
 """;
 
         // Responses API payload (vision input with base64)
@@ -300,12 +303,16 @@ Rules:
         // Simple retry (you can expand to exponential backoff)
         for (int attempt = 1; attempt <= 3; attempt++)
         {
+            Console.WriteLine($"  API attempt {attempt}/3...");
             using var resp = await http.SendAsync(req.Clone());
             var body = await resp.Content.ReadAsStringAsync();
+            Console.WriteLine($"  Response status: {(int)resp.StatusCode} {resp.StatusCode}");
 
             if (!resp.IsSuccessStatusCode)
             {
+                Console.WriteLine($"  Response body: {Truncate(body, 500)}");
                 if (attempt == 3) throw new Exception($"API error: {resp.StatusCode} :: {body}");
+                Console.WriteLine($"  Retrying in {500 * attempt}ms...");
                 await Task.Delay(500 * attempt);
                 continue;
             }
@@ -314,16 +321,18 @@ Rules:
             // We'll parse loosely to avoid depending on a rigid schema.
             var jsonDoc = JsonDocument.Parse(body);
             var text = ExtractOutputText(jsonDoc.RootElement);
+            Console.WriteLine($"  Extracted model output ({text.Length} chars): {Truncate(text, 300)}");
             if (string.IsNullOrWhiteSpace(text))
                 throw new Exception("No output_text returned from model.");
 
             // Now parse the OCR JSON the model returned
-            var result = JsonSerializer.Deserialize<EnvelopeResult>(text,
+            var result = JsonSerializer.Deserialize<OcrResult>(text,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
-            if (result == null || result.Blocks.Count == 0)
+            if (result == null || string.IsNullOrWhiteSpace(result.Text))
                 throw new Exception("Model returned invalid/empty JSON.");
 
+            Console.WriteLine($"  Parsed OCR result: {result.Text.Length} chars");
             return result;
         }
 

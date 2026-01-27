@@ -32,7 +32,7 @@ inbox/
 processing/
 processed/
 failed/
-output/
+results/
 
 # =========================
 # Logs / manifests
