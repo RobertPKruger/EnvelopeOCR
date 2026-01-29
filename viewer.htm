@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Astronomy OCR Batch Viewer</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #1a1a2e;
+            color: #eee;
+        }
+        h1 {
+            text-align: center;
+            color: #a8dadc;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            text-align: center;
+            color: #888;
+            margin-bottom: 30px;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .controls input[type="file"] {
+            flex: 1;
+            min-width: 200px;
+        }
+        .controls input[type="text"] {
+            flex: 2;
+            min-width: 300px;
+            padding: 10px;
+            border: 1px solid #444;
+            border-radius: 5px;
+            background: #2a2a4a;
+            color: #eee;
+        }
+        .stats {
+            background: #2a2a4a;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: flex;
+            gap: 30px;
+            flex-wrap: wrap;
+        }
+        .stat {
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 2em;
+            font-weight: bold;
+            color: #a8dadc;
+        }
+        .stat-label {
+            color: #888;
+            font-size: 0.9em;
+        }
+        .file-list {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        .file-card {
+            background: #2a2a4a;
+            border-radius: 8px;
+            padding: 20px;
+            border-left: 4px solid #a8dadc;
+        }
+        .file-card:hover {
+            background: #3a3a5a;
+        }
+        .file-name {
+            font-weight: bold;
+            color: #a8dadc;
+            font-size: 1.1em;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .file-name::before {
+            content: '';
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            background: #a8dadc;
+            border-radius: 50%;
+        }
+        .file-text {
+            white-space: pre-wrap;
+            font-family: 'Courier New', Consolas, monospace;
+            background: #1a1a2e;
+            padding: 15px;
+            border-radius: 5px;
+            line-height: 1.6;
+            overflow-x: auto;
+        }
+        .highlight {
+            background: #ffd700;
+            color: #000;
+            padding: 1px 3px;
+            border-radius: 3px;
+        }
+        .no-data {
+            text-align: center;
+            padding: 50px;
+            color: #888;
+        }
+        .error {
+            background: #4a2a2a;
+            border-left-color: #ff6b6b;
+            color: #ff6b6b;
+        }
+        #dropZone {
+            border: 2px dashed #444;
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            color: #888;
+            margin-bottom: 20px;
+            transition: all 0.3s;
+        }
+        #dropZone.dragover {
+            border-color: #a8dadc;
+            background: #2a2a4a;
+        }
+        #dropZone p {
+            margin: 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>Astronomy OCR Batch Viewer</h1>
+    <p class="subtitle">View extracted text from photographic plate images</p>
+
+    <div id="dropZone">
+        <p>Drag and drop <strong>envelopes-batch.json</strong> here, or use the file picker below</p>
+    </div>
+
+    <div class="controls">
+        <input type="file" id="fileInput" accept=".json">
+        <input type="text" id="searchInput" placeholder="Search text... (highlights matching terms)">
+    </div>
+
+    <div class="stats" id="stats" style="display: none;">
+        <div class="stat">
+            <div class="stat-value" id="fileCount">0</div>
+            <div class="stat-label">Files Processed</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value" id="totalChars">0</div>
+            <div class="stat-label">Total Characters</div>
+        </div>
+        <div class="stat">
+            <div class="stat-value" id="avgChars">0</div>
+            <div class="stat-label">Avg per File</div>
+        </div>
+    </div>
+
+    <div class="file-list" id="fileList">
+        <div class="no-data">Load a JSON file to view results</div>
+    </div>
+
+    <script>
+        let batchData = null;
+
+        const dropZone = document.getElementById('dropZone');
+        const fileInput = document.getElementById('fileInput');
+        const searchInput = document.getElementById('searchInput');
+        const fileList = document.getElementById('fileList');
+        const stats = document.getElementById('stats');
+
+        // Drag and drop handlers
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('dragover');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            const file = e.dataTransfer.files[0];
+            if (file) loadFile(file);
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) loadFile(file);
+        });
+
+        searchInput.addEventListener('input', () => {
+            renderFiles();
+        });
+
+        function loadFile(file) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    batchData = JSON.parse(e.target.result);
+                    renderFiles();
+                    updateStats();
+                    dropZone.style.display = 'none';
+                    stats.style.display = 'flex';
+                } catch (err) {
+                    fileList.innerHTML = `<div class="file-card error">Error parsing JSON: ${err.message}</div>`;
+                }
+            };
+            reader.readAsText(file);
+        }
+
+        // Helper functions to handle both PascalCase (C#) and camelCase property names
+        function getFiles(data) {
+            return data.Files || data.files || [];
+        }
+        function getName(file) {
+            return file.Name || file.name || '';
+        }
+        function getText(file) {
+            return file.Text || file.text || '';
+        }
+
+        function updateStats() {
+            if (!batchData) return;
+            const files = getFiles(batchData);
+            if (!files.length) return;
+
+            const totalChars = files.reduce((sum, f) => sum + getText(f).length, 0);
+
+            document.getElementById('fileCount').textContent = files.length;
+            document.getElementById('totalChars').textContent = totalChars.toLocaleString();
+            document.getElementById('avgChars').textContent = files.length > 0
+                ? Math.round(totalChars / files.length).toLocaleString()
+                : '0';
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function highlightText(text, searchTerm) {
+            if (!searchTerm) return escapeHtml(text);
+
+            const escaped = escapeHtml(text);
+            const regex = new RegExp(`(${escapeRegex(searchTerm)})`, 'gi');
+            return escaped.replace(regex, '<span class="highlight">$1</span>');
+        }
+
+        function escapeRegex(string) {
+            return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        }
+
+        function renderFiles() {
+            if (!batchData) {
+                fileList.innerHTML = '<div class="no-data">No files found in JSON</div>';
+                return;
+            }
+
+            const files = getFiles(batchData);
+            const searchTerm = searchInput.value.trim();
+
+            if (files.length === 0) {
+                fileList.innerHTML = '<div class="no-data">No files in batch</div>';
+                return;
+            }
+
+            // Filter files if searching
+            const filteredFiles = searchTerm
+                ? files.filter(f =>
+                    getName(f).toLowerCase().includes(searchTerm.toLowerCase()) ||
+                    getText(f).toLowerCase().includes(searchTerm.toLowerCase()))
+                : files;
+
+            if (filteredFiles.length === 0) {
+                fileList.innerHTML = `<div class="no-data">No files match "${escapeHtml(searchTerm)}"</div>`;
+                return;
+            }
+
+            fileList.innerHTML = filteredFiles.map(file => `
+                <div class="file-card">
+                    <div class="file-name">${highlightText(getName(file) || 'Unnamed', searchTerm)}</div>
+                    <div class="file-text">${highlightText(getText(file) || '(no text)', searchTerm)}</div>
+                </div>
+            `).join('');
+        }
+
+        // Try to auto-load from results folder (won't work due to CORS, but nice for local servers)
+        fetch('results/envelopes-batch.json')
+            .then(r => r.json())
+            .then(data => {
+                batchData = data;
+                renderFiles();
+                updateStats();
+                dropZone.style.display = 'none';
+                stats.style.display = 'flex';
+            })
+            .catch(() => {
+                // Expected to fail when opened as file://, user will drag-drop instead
+            });
+    </script>
+</body>
+</html>

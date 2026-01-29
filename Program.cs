@@ -122,10 +122,7 @@ static class Program
                     var pf = new ProcessedFile
                     {
                         Name = fileName,
-                        Sections = new List<OutputSection>
-                        {
-                            new OutputSection { Content = (result.Text ?? "").Trim() }
-                        }
+                        Text = (result.Text ?? "").Trim()
                     };
 
                     batch!.Files.Add(pf);
@@ -401,11 +398,6 @@ public sealed class BatchOutput
 
 public sealed class ProcessedFile
 {
-    public string Name { get; set; } = "";                 // image filename
-    public List<OutputSection> Sections { get; set; } = new();
-}
-
-public sealed class OutputSection
-{
-    public string Content { get; set; } = "";              // one section's text
+    public string Name { get; set; } = "";
+    public string Text { get; set; } = "";
 }
